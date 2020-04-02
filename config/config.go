@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/knq/ini"
@@ -15,6 +16,7 @@ const (
 	MULTICAST_ADDRESS = `224.3.45.67`
 	MULTICAST_PORT    = `15679`
 	CACHE_DIR         = `/var/cache/pacman/pkg/`
+	SYNC_DIR          = `/var/lib/pacman/`
 	PACMAN_CONFIG     = `/etc/pacman.conf`
 )
 
@@ -22,6 +24,7 @@ type Paclan struct {
 	IFace         string
 	HTTPPort      string
 	Arch          string
+	SyncDir       string
 	CacheDir      string
 	MulticastPort string
 	MulticastAddr string
@@ -58,6 +61,7 @@ func New(confFile string, args []string) (*Paclan, error) {
 	if conf.PeerTimeout == 0 {
 		conf.PeerTimeout = TTL
 	}
+	conf.SyncDir = plConf.GetKey("pacman.Database")
 	pacConf := plConf.GetKey("pacman.Config")
 	if pacConf == "" {
 		pacConf = PACMAN_CONFIG
@@ -82,6 +86,18 @@ func (p Paclan) pacmanConf(file string) (*Paclan, error) {
 		}
 		p.Arch = string(bytes.TrimSpace(out))
 	}
+	fmt.Printf("%q", p.SyncDir)
+	switch p.SyncDir {
+	case "true":
+		p.SyncDir = plConf.GetKey("options.DBPath")
+		if p.SyncDir == "" {
+			p.SyncDir = SYNC_DIR
+		}
+		p.SyncDir = filepath.Join(p.SyncDir, "sync")
+	default:
+		p.SyncDir = "" // clear any garbage config values
+	}
+	fmt.Printf("%q", p.SyncDir)
 	fmt.Println("arch:", p.Arch)
 	return &p, nil
 }

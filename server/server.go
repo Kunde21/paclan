@@ -8,8 +8,8 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"runtime"
-	"sync"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Kunde21/paclan/config"
@@ -27,6 +27,7 @@ type server struct {
 	PeerLister
 	arch  string
 	cache string
+	sync  string
 }
 
 type PeerLister interface {
@@ -38,6 +39,7 @@ func New(conf *config.Paclan, peers PeerLister) (server, error) {
 		PeerLister: peers,
 		arch:       conf.Arch,
 		cache:      conf.CacheDir,
+		sync:       conf.SyncDir,
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/", http.HandlerFunc(srv.handle))
@@ -67,6 +69,12 @@ func (srv server) handle(w http.ResponseWriter, r *http.Request) {
 
 func (srv server) handleLocal(w http.ResponseWriter, r *http.Request) {
 	log.Println("local request:", r.URL.Path)
+	// sync indicates a database master server, do not fetch from peers
+	if srv.sync != "" && strings.HasSuffix(filepath.Base(r.URL.Path), ".db") {
+		log.Println("database master", r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 	found := make(chan string, 1)
 	defer close(found)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -87,43 +95,16 @@ func (srv server) handleLocal(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (srv server) searchRemote(ctx context.Context, r *url.URL, found chan<- string) {
-	path := path.Join(path.Dir(path.Dir(r.Path)), runtime.GOARCH, path.Base(r.Path))
-	newUrl := *r
-	newUrl.Scheme = "http"
-	newUrl.Path = path
-	p := srv.GetPeerList()
-	wg := &sync.WaitGroup{}
-	wg.Add(len(p))
-	for _, peer := range p {
-		newUrl.Host = peer
-		log.Println("requesting peer:", p, newUrl.String())
-		go func(url string) {
-			defer wg.Done()
-			req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
-			if err != nil {
-				return
-			}
-			resp, err := http.DefaultClient.Do(req)
-			if err == nil && resp.StatusCode == http.StatusOK {
-				found <- url
-			}
-		}(newUrl.String())
-	}
-	wg.Wait()
-}
-
 func (srv server) handleRemote(w http.ResponseWriter, r *http.Request) {
 	log.Println("remote request:", path.Base(r.URL.Path))
 	file := path.Base(r.URL.Path)
-	fpath := path.Join(srv.cache, file)
 	if arch := r.Header.Get(ARCH_HEADER); arch != "" && srv.arch != arch {
 		log.Println("pkg search:", arch, file, "arch mismatch")
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	if _, err := os.Stat(fpath); err != nil {
-		log.Println("pkg search:", file, err)
+	fpath := srv.findFile(file)
+	if fpath == "" {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -134,6 +115,27 @@ func (srv server) handleRemote(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		http.ServeFile(w, r, fpath)
 	}
+}
+
+// findFile checks for cached package or database (if enabled)
+// absolute path returned if found.
+func (srv server) findFile(file string) string {
+	fpath := filepath.Join(srv.cache, file)
+	_, err := os.Stat(fpath)
+	if err == nil {
+		return fpath
+	}
+	if srv.sync == "" {
+		log.Println("pkg search:", file, err)
+		return ""
+	}
+	fpath = filepath.Join(srv.sync, file)
+	_, err = os.Stat(fpath)
+	if err == nil {
+		return fpath
+	}
+	log.Println("pkg search:", file, err)
+	return ""
 }
 
 // Search for a package in the peer network.
