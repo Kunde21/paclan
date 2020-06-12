@@ -85,7 +85,7 @@ func (lhd *DNS) Serve(ctx context.Context) {
 
 // RegisterSelf with the rest of the network and listen for local peers.
 func (lhd *DNS) RegisterSelf(ctx context.Context) error {
-	ip, err := getAddr(lhd.netIface)
+	ip, _, err := getAddr(lhd.netIface)
 	if err != nil {
 		return err
 	}
@@ -171,7 +171,7 @@ func (lhd DNS) discovered(multicastPort string) func(disc peerdiscovery.Discover
 
 // Listen for response announcements.
 func (lhd DNS) Listen(ctx context.Context) error {
-	IP, err := getAddr(lhd.netIface)
+	IP, netmask, err := getAddr(lhd.netIface)
 	if err != nil {
 		return err
 	}
@@ -179,11 +179,12 @@ func (lhd DNS) Listen(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	IP[15] = 0
+	IP = IP.Mask(netmask)
 	addr := &net.UDPAddr{
 		IP:   IP,
 		Port: port,
 	}
+	log.Println("Listening for announcements on", IP.String())
 	conn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
 		return err
@@ -222,15 +223,15 @@ func (lhd DNS) Listen(ctx context.Context) error {
 }
 
 // getAddr finds an external address to advertise.
-func getAddr(ifaceName string) (net.IP, error) {
+func getAddr(ifaceName string) (net.IP, net.IPMask, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if ifaceName != "" {
 		iface, err := net.InterfaceByName(ifaceName)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		ifaces = []net.Interface{*iface}
 	}
@@ -245,20 +246,23 @@ func getAddr(ifaceName string) (net.IP, error) {
 		}
 		for _, addr := range addrs {
 			var ip net.IP
+			var netmask net.IPMask
 			switch v := addr.(type) {
 			case *net.IPNet:
 				if _, b := v.Mask.Size(); b != 32 {
 					continue
 				}
 				ip = []byte(v.IP)
+				netmask = []byte(v.Mask)
 			case *net.IPAddr:
 				ip = []byte(v.IP)
+				netmask = []byte(net.CIDRMask(32, 32))
 			}
 			if ip[12] == 127 {
 				continue
 			}
-			return ip, nil
+			return ip, netmask, nil
 		}
 	}
-	return nil, errors.New("no external interface")
+	return nil, nil, errors.New("no external interface")
 }
