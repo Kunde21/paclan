@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Kunde21/paclan/config"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -23,26 +23,27 @@ const (
 
 type server struct {
 	*http.Server
-	// *peers.DNS
 	PeerLister
 	arch  string
 	cache string
 	sync  string
+	log   *logrus.Entry
 }
 
 type PeerLister interface {
 	GetPeerList() []string
 }
 
-func New(conf *config.Paclan, peers PeerLister) (server, error) {
+func New(conf *config.Paclan, peers PeerLister, log *logrus.Entry) (server, error) {
 	srv := server{
 		PeerLister: peers,
 		arch:       conf.Arch,
 		cache:      conf.CacheDir,
 		sync:       conf.SyncDir,
+		log:        log,
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/", http.HandlerFunc(srv.handle))
+	mux.HandleFunc("/", srv.handle)
 	srv.Server = &http.Server{
 		Addr:              net.JoinHostPort("", conf.HTTPPort),
 		Handler:           mux,
@@ -57,7 +58,7 @@ func New(conf *config.Paclan, peers PeerLister) (server, error) {
 func (srv server) handle(w http.ResponseWriter, r *http.Request) {
 	addr, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
 	if err != nil {
-		log.Printf("Error serving %s: %s\n", r.RemoteAddr, err)
+		srv.log.WithError(err).WithField("addr", r.RemoteAddr).Error("serving")
 		return
 	}
 	if addr.IP.IsLoopback() {
@@ -68,10 +69,10 @@ func (srv server) handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (srv server) handleLocal(w http.ResponseWriter, r *http.Request) {
-	log.Println("local request:", r.URL.Path)
+	log := srv.log.WithField("source", "local").WithField("request", r.URL.Path)
 	// sync indicates a database master server, do not fetch from peers
 	if srv.sync != "" && strings.HasSuffix(filepath.Base(r.URL.Path), ".db") {
-		log.Println("database master", r.URL.Path)
+		log.WithField("role", "database master").Info("skipping")
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -79,13 +80,13 @@ func (srv server) handleLocal(w http.ResponseWriter, r *http.Request) {
 	defer close(found)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	redir := srv.Search(ctx, r.URL)
+	redir := srv.Search(ctx, log, r.URL)
 	if redir == "" {
-		log.Println("not found", r.URL.Path)
+		log.Info("not found")
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	log.Println("found", r.URL, redir)
+	log.WithField("target", redir).Info("found")
 	switch r.Method {
 	case http.MethodHead:
 		w.WriteHeader(http.StatusOK)
@@ -96,19 +97,20 @@ func (srv server) handleLocal(w http.ResponseWriter, r *http.Request) {
 }
 
 func (srv server) handleRemote(w http.ResponseWriter, r *http.Request) {
-	log.Println("remote request:", path.Base(r.URL.Path))
+	log := srv.log.WithField("source", r.RemoteAddr).
+		WithField("request", path.Base(r.URL.Path))
 	file := path.Base(r.URL.Path)
 	if arch := r.Header.Get(ARCH_HEADER); arch != "" && srv.arch != arch {
-		log.Println("pkg search:", arch, file, "arch mismatch")
+		log.WithField("arch", arch).Info("arch mismatch")
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	fpath := srv.findFile(file)
+	fpath := srv.findFile(log, file)
 	if fpath == "" {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	log.Println("pkg found:", file)
+	log.Info("pkg found")
 	switch r.Method {
 	case http.MethodHead:
 		w.WriteHeader(http.StatusOK)
@@ -119,14 +121,15 @@ func (srv server) handleRemote(w http.ResponseWriter, r *http.Request) {
 
 // findFile checks for cached package or database (if enabled)
 // absolute path returned if found.
-func (srv server) findFile(file string) string {
+func (srv server) findFile(log *logrus.Entry, file string) string {
 	fpath := filepath.Join(srv.cache, file)
+	log = log.WithField("file_path", fpath)
 	_, err := os.Stat(fpath)
 	if err == nil {
 		return fpath
 	}
+	log.WithError(err).Info("failed")
 	if srv.sync == "" {
-		log.Println("pkg search:", file, err)
 		return ""
 	}
 	fpath = filepath.Join(srv.sync, file)
@@ -134,12 +137,12 @@ func (srv server) findFile(file string) string {
 	if err == nil {
 		return fpath
 	}
-	log.Println("pkg search:", file, err)
+	log.WithField("sync_path", fpath).WithError(err).Info("sync failed")
 	return ""
 }
 
 // Search for a package in the peer network.
-func (srv server) Search(ctx context.Context, r *url.URL) (host string) {
+func (srv server) Search(ctx context.Context, log *logrus.Entry, r *url.URL) (host string) {
 	newUrl := *r
 	newUrl.Scheme = "http"
 	ctx, cancel := context.WithCancel(ctx)
@@ -147,7 +150,7 @@ func (srv server) Search(ctx context.Context, r *url.URL) (host string) {
 	eg, ctx := errgroup.WithContext(ctx)
 	found := make(chan string, 1)
 	peers := srv.GetPeerList()
-	log.Printf("requesting pkg %q from %d peers", path.Base(r.Path), len(peers))
+	log.WithField("peers", len(peers)).Info("requesting from peers")
 	for _, peer := range peers {
 		newUrl.Host = peer
 		urlNext := newUrl.String()

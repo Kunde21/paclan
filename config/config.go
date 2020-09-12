@@ -2,7 +2,6 @@ package config
 
 import (
 	"bytes"
-	"fmt"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -74,7 +73,7 @@ func (p Paclan) pacmanConf(file string) (*Paclan, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.CacheDir = plConf.GetKey("CacheDir")
+	p.CacheDir = plConf.GetKey("options.CacheDir")
 	if p.CacheDir == "" {
 		p.CacheDir = CACHE_DIR
 	}
@@ -86,7 +85,6 @@ func (p Paclan) pacmanConf(file string) (*Paclan, error) {
 		}
 		p.Arch = string(bytes.TrimSpace(out))
 	}
-	fmt.Printf("%q", p.SyncDir)
 	switch p.SyncDir {
 	case "true":
 		p.SyncDir = plConf.GetKey("options.DBPath")
@@ -97,7 +95,5 @@ func (p Paclan) pacmanConf(file string) (*Paclan, error) {
 	default:
 		p.SyncDir = "" // clear any garbage config values
 	}
-	fmt.Printf("%q", p.SyncDir)
-	fmt.Println("arch:", p.Arch)
 	return &p, nil
 }

@@ -1,9 +1,10 @@
 package peers
 
 import (
-	"log"
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 type peerMap struct {
@@ -21,10 +22,13 @@ func newPeerMap(timeout time.Duration) peerMap {
 	return p
 }
 
-func (p peerMap) add(peer string) {
+func (p peerMap) add(log *logrus.Entry, peer string) {
 	p.Lock()
 	if _, ok := p.peers[peer]; !ok {
-		log.Println("registered", peer, len(p.peers)+1)
+		log.WithFields(logrus.Fields{
+			"peer":  peer,
+			"count": len(p.peers) + 1,
+		}).Info("registered")
 	}
 	// always update to reflect last seen timestamp
 	p.peers[peer] = time.Now().UTC()

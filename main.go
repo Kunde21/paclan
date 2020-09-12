@@ -15,7 +15,6 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -24,6 +23,7 @@ import (
 	"github.com/Kunde21/paclan/config"
 	"github.com/Kunde21/paclan/peers"
 	"github.com/Kunde21/paclan/server"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -31,12 +31,18 @@ func main() {
 	var confFile string
 	flag.StringVar(&confFile, "c", PaclanConfig, "paclan configuration file")
 	flag.Parse()
+	log := logrus.New().WithField("service", "paclan")
 	conf, err := config.New(confFile, flag.Args())
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.WithFields(logrus.Fields{
+		"arch":      conf.Arch,
+		"cache_dir": conf.CacheDir,
+		"sync_dir":  conf.SyncDir,
+	}).Info("configured")
 	peers := peers.New(conf)
-	srv, err := server.New(conf, peers)
+	srv, err := server.New(conf, peers, log)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -44,9 +50,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		defer cancel()
-		log.Println("Serving from", conf.HTTPPort)
+		log.WithField("port", conf.HTTPPort).Info("serving")
 		if err := srv.ListenAndServe(); err != nil {
-			log.Fatal(err)
+			log.WithError(err).Error("server failed")
 		}
 	}()
 	peers.Serve(ctx)
@@ -60,7 +66,7 @@ func main() {
 	peers.Close()
 	shCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	log.Println("http server closing")
+	log.Info("http server closing")
 	srv.Shutdown(shCtx)
-	log.Println("exiting...")
+	log.Info("exiting...")
 }
